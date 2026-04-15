@@ -1,0 +1,396 @@
+// ============================================================
+// Hospital Appointment Booking System - Prisma Schema
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------------------------------------
+// ENUMS
+// ------------------------------------------------------------
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  DOCTOR
+  RECEPTIONIST
+  PATIENT
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+  PREFER_NOT_TO_SAY
+}
+
+enum AccountStatus {
+  ACTIVE
+  INACTIVE
+  PENDING_APPROVAL
+  SUSPENDED
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  REJECTED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+enum NotificationType {
+  APPOINTMENT_BOOKED
+  APPOINTMENT_CONFIRMED
+  APPOINTMENT_REJECTED
+  APPOINTMENT_CANCELLED
+  APPOINTMENT_RESCHEDULED
+  APPOINTMENT_REMINDER
+  APPOINTMENT_COMPLETED
+  ACCOUNT_ACTIVATED
+  SYSTEM
+}
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+// ------------------------------------------------------------
+// CORE USER MODEL
+// ------------------------------------------------------------
+
+// Every login-capable account in the system has a User row.
+// Role-specific data lives in Patient / Doctor / Staff.
+model User {
+  id                String        @id @default(uuid())
+  email             String        @unique
+  passwordHash      String
+  role              Role
+  status            AccountStatus @default(ACTIVE)
+  isEmailVerified   Boolean       @default(false)
+  lastLoginAt       DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  patient           Patient?
+  doctor            Doctor?
+  staff             Staff?
+
+  notifications     Notification[]
+  auditLogs         AuditLog[]
+  passwordResetTokens PasswordResetToken[]
+  refreshTokens     RefreshToken[]
+
+  @@index([role])
+  @@index([status])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+// ------------------------------------------------------------
+// PATIENT
+// ------------------------------------------------------------
+
+model Patient {
+  id                  String   @id @default(uuid())
+  userId               String   @unique
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  firstName            String
+  lastName             String
+  phone                String?
+  dateOfBirth          DateTime?
+  gender               Gender?
+  address              String?
+  emergencyContactName String?
+  emergencyContactPhone String?
+  bloodGroup           String?
+  profilePhotoUrl      String?
+
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  appointments         Appointment[]
+
+  @@index([lastName, firstName])
+  @@map("patients")
+}
+
+// ------------------------------------------------------------
+// DEPARTMENT & SPECIALTY
+// ------------------------------------------------------------
+
+model Department {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  doctors      Doctor[]
+  appointments Appointment[]
+
+  @@map("departments")
+}
+
+model Specialty {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  doctors      DoctorSpecialty[]
+
+  @@map("specialties")
+}
+
+// Many-to-many join: a doctor can have multiple specialties
+model DoctorSpecialty {
+  doctorId    String
+  specialtyId String
+  doctor      Doctor    @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  specialty   Specialty @relation(fields: [specialtyId], references: [id], onDelete: Cascade)
+
+  @@id([doctorId, specialtyId])
+  @@map("doctor_specialties")
+}
+
+// ------------------------------------------------------------
+// DOCTOR
+// ------------------------------------------------------------
+
+model Doctor {
+  id                  String        @id @default(uuid())
+  userId              String        @unique
+  user                User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  firstName           String
+  lastName             String
+  phone                String?
+  gender               Gender?
+  dateOfBirth          DateTime?
+  profilePhotoUrl      String?
+
+  medicalLicenseNo     String        @unique
+  departmentId         String
+  department           Department    @relation(fields: [departmentId], references: [id])
+  specialties          DoctorSpecialty[]
+
+  yearsOfExperience    Int           @default(0)
+  qualification        String?
+  biography            String?
+  consultationFee      Decimal       @default(0) @db.Decimal(10, 2)
+  roomNumber           String?
+
+  appointmentDurationMinutes Int     @default(30)
+  isActive             Boolean       @default(true)
+
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  availabilities       DoctorAvailability[]
+  unavailableDates     DoctorUnavailableDate[]
+  appointments         Appointment[]
+
+  @@index([departmentId])
+  @@index([lastName, firstName])
+  @@map("doctors")
+}
+
+// Recurring weekly availability, e.g. MONDAY 08:00-12:00
+model DoctorAvailability {
+  id         String    @id @default(uuid())
+  doctorId   String
+  doctor     Doctor    @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  dayOfWeek  DayOfWeek
+  startTime  String    // "HH:mm" 24h format
+  endTime    String    // "HH:mm" 24h format
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([doctorId, dayOfWeek])
+  @@map("doctor_availabilities")
+}
+
+// One-off dates a doctor is unavailable (holiday, leave, etc.)
+model DoctorUnavailableDate {
+  id        String   @id @default(uuid())
+  doctorId  String
+  doctor    Doctor   @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  date      DateTime @db.Date
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@unique([doctorId, date])
+  @@map("doctor_unavailable_dates")
+}
+
+model Holiday {
+  id     String   @id @default(uuid())
+  date   DateTime @db.Date
+  name   String
+
+  @@unique([date])
+  @@map("holidays")
+}
+
+// ------------------------------------------------------------
+// STAFF (admin / super_admin / receptionist profile info)
+// ------------------------------------------------------------
+
+model Staff {
+  id         String   @id @default(uuid())
+  userId     String   @unique
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  firstName  String
+  lastName   String
+  phone      String?
+  jobTitle   String?
+  profilePhotoUrl String?
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("staff")
+}
+
+// ------------------------------------------------------------
+// APPOINTMENT
+// ------------------------------------------------------------
+
+model Appointment {
+  id             String            @id @default(uuid())
+
+  patientId      String
+  patient        Patient           @relation(fields: [patientId], references: [id])
+
+  doctorId       String
+  doctor         Doctor            @relation(fields: [doctorId], references: [id])
+
+  departmentId   String
+  department     Department        @relation(fields: [departmentId], references: [id])
+
+  appointmentDate DateTime         @db.Date
+  startTime      String            // "HH:mm"
+  endTime        String            // "HH:mm"
+
+  reason         String
+  status         AppointmentStatus @default(PENDING)
+  doctorNotes    String?           // private notes, doctor/admin only
+  cancelReason   String?
+
+  createdByUserId String?          // who created it (patient, receptionist, admin)
+  checkedInAt    DateTime?
+
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  notifications  Notification[]
+
+  // A doctor cannot be double-booked for the same date+start time
+  @@unique([doctorId, appointmentDate, startTime])
+  @@index([patientId])
+  @@index([doctorId, appointmentDate])
+  @@index([status])
+  @@map("appointments")
+}
+
+// ------------------------------------------------------------
+// NOTIFICATIONS
+// ------------------------------------------------------------
+
+model Notification {
+  id            String           @id @default(uuid())
+  userId        String
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type          NotificationType
+  title         String
+  message       String
+  isRead        Boolean          @default(false)
+
+  appointmentId String?
+  appointment   Appointment?     @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  createdAt     DateTime         @default(now())
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+// ------------------------------------------------------------
+// AUDIT LOG
+// ------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  action     String   // e.g. "DOCTOR_CREATED", "APPOINTMENT_CANCELLED"
+  entityType String   // e.g. "Doctor", "Appointment"
+  entityId   String?
+  details    Json?
+  ipAddress  String?
+
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
+
+// ------------------------------------------------------------
+// SYSTEM SETTINGS
+// ------------------------------------------------------------
+
+model SystemSetting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
+}
